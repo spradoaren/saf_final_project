@@ -19,12 +19,18 @@ def build_hmm_and_score(X, n_states=4, covariance_type="full", n_iter=100, tol=1
         log_likelihood: log P(O | λ)
     """
 
-    model = GaussianHMM(n_states,covariance_type,n_iter,
-        init_params='mc',random_state=random_seed ) # only initialize means and covariances
+    model = GaussianHMM(
+        n_components=n_states,
+        covariance_type=covariance_type,
+        n_iter=n_iter,
+        tol=tol,
+        min_covar=1e-3,
+        init_params="stmc",
+        transmat_prior=1.0,
+        startprob_prior=1.0,
+        random_state=random_seed,
+    )
 
-    # avoid all 0
-    model.startprob_ = np.full(n_states, 1.0 / n_states)
-    model.transmat_ = np.full((n_states, n_states), 1.0 / n_states)
     # Baum-Welch (EM) training
     model.fit(X)
 
