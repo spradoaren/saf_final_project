@@ -5,7 +5,7 @@ from statsmodels.tsa.regime_switching.markov_autoregression import MarkovAutoreg
 
 class MSARModel:
     """
-    Markov Switching AR Model (Project Version)
+    Markov Switching AR Model
     """
 
     def __init__(self, n_regimes=2, order=1, switching_variance=True):
@@ -22,11 +22,9 @@ class MSARModel:
         Compatible with adapter output
         """
 
-        # multi-index case
         if isinstance(df.columns, pd.MultiIndex):
             df = df[price_col]
 
-        # single ticker
         if price_col in df.columns:
             series = df[price_col]
         else:
