@@ -209,3 +209,30 @@ if __name__ == "__main__":
     )
 
     print(df.head())
+
+
+import numpy as np
+
+def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert daily OHLC to weekly (Friday close)
+    """
+    return df.resample("W-FRI").last()
+
+
+def compute_log_returns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute log returns from Close price
+    Works for multi-index columns from yfinance
+    """
+    df = df.copy()
+
+    # handle multi-index columns (ticker, field)
+    if isinstance(df.columns, pd.MultiIndex):
+        close = df.xs("Close", axis=1, level=1)
+    else:
+        close = df["Close"]
+
+    log_ret = np.log(close / close.shift(1))
+
+    return log_ret.dropna()
