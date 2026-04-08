@@ -43,7 +43,7 @@ def main() -> None:
         dates=prepared.dates,
         X=prepared.X,
         y=prepared.y,
-        use_viterbi=False,
+        use_viterbi=True,
     )
 
     summary = summarize_regimes(results)

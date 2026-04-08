@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -65,7 +66,7 @@ class GaussianEmissionModel:
             else:
                 beta = self._weighted_ridge_fit(X1, y, mask.astype(float))
                 mu = X1 @ beta
-                resid = y - mu
+                resid = y[mask] - mu[mask]
                 sigma2 = float(np.mean(resid**2) + 1e-4)
 
             self.states.append(GaussianEmissionState(beta=beta, sigma2=sigma2))
@@ -93,7 +94,7 @@ class GaussianEmissionModel:
             beta = self._weighted_ridge_fit(X1, y, w)
             mu = X1 @ beta
             sigma2 = np.sum(w * (y - mu) ** 2) / max(np.sum(w), EPS)
-            sigma2 = max(float(sigma2), 1e-6)
+            sigma2 = max(float(sigma2), 1e-4)
             new_states.append(GaussianEmissionState(beta=beta, sigma2=sigma2))
 
         self.states = new_states
@@ -157,26 +158,28 @@ class SoftmaxTransitionModel:
         X1 = _add_intercept(X_next)
 
         for i in range(self.n_states):
-            soft_targets = xi[:, i, :]
-            row_mass = soft_targets.sum(axis=1, keepdims=True)
-            safe_mass = np.maximum(row_mass, EPS)
-            soft_targets_norm = soft_targets / safe_mass
-            weighted_targets = soft_targets_norm * row_mass
-
+            targets = xi[:, i, :]
             x0 = self.W[i].ravel().copy()
 
-            def fun(w_flat: np.ndarray) -> Tuple[float, np.ndarray]:
-                return self._objective_and_grad(w_flat, X1, weighted_targets)
+            def make_fun(targets_i: np.ndarray):
+                def fun(w_flat: np.ndarray) -> Tuple[float, np.ndarray]:
+                    return self._objective_and_grad(w_flat, X1, targets_i)
+                return fun
 
             res = minimize(
-                fun=lambda w: fun(w)[0],
+                fun=make_fun(targets),
                 x0=x0,
-                jac=lambda w: fun(w)[1],
+                jac=True,
                 method="L-BFGS-B",
             )
 
             if res.success:
                 self.W[i] = res.x.reshape(self.n_states, X1.shape[1])
+            else:
+                warnings.warn(
+                    f"Transition optimization failed for prev_state={i}: {res.message}. "
+                    "Keeping previous weights."
+                )
 
 
 @dataclass
@@ -195,6 +198,7 @@ class GaussianIOHMM:
         max_iter: int = 100,
         tol: float = 1e-4,
         random_state: Optional[int] = 42,
+        n_init: int = 1,
     ):
         if n_states < 2:
             raise ValueError("n_states must be >= 2")
@@ -205,6 +209,7 @@ class GaussianIOHMM:
         self.max_iter = int(max_iter)
         self.tol = float(tol)
         self.random_state = random_state
+        self.n_init = int(n_init)
 
         self.feature_mean_: Optional[np.ndarray] = None
         self.feature_std_: Optional[np.ndarray] = None
@@ -214,7 +219,7 @@ class GaussianIOHMM:
         self.transition_model: Optional[SoftmaxTransitionModel] = None
         self.is_fitted_: bool = False
 
-    def _initialize(self, X: np.ndarray, y: np.ndarray) -> None:
+    def _initialize(self, X: np.ndarray, y: np.ndarray, rng: Optional[np.random.Generator] = None) -> None:
         Xs, mean, std = _standardize_fit(X)
         self.feature_mean_ = mean
         self.feature_std_ = std
@@ -227,6 +232,11 @@ class GaussianIOHMM:
             ridge=self.emission_ridge,
         )
         self.emission_model.initialize_from_quantiles(Xs, y)
+
+        if rng is not None:
+            for st in self.emission_model.states:
+                st.beta += rng.normal(scale=0.1, size=st.beta.shape)
+                st.sigma2 *= rng.uniform(0.8, 1.2)
 
         self.transition_model = SoftmaxTransitionModel(
             n_states=self.n_states,
@@ -287,20 +297,8 @@ class GaussianIOHMM:
 
         return loglik, gamma, xi, log_alpha, log_beta
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> IOHMMFitResult:
-        X = np.asarray(X, dtype=float)
-        y = np.asarray(y, dtype=float)
-
-        if X.ndim != 2:
-            raise ValueError("X must be 2D.")
-        if y.ndim != 1:
-            raise ValueError("y must be 1D.")
-        if len(X) != len(y):
-            raise ValueError("X and y must have same number of rows.")
-        if len(y) < 20:
-            raise ValueError("Need more observations to fit IOHMM.")
-
-        self._initialize(X, y)
+    def _fit_single(self, X: np.ndarray, y: np.ndarray, rng: Optional[np.random.Generator] = None) -> IOHMMFitResult:
+        self._initialize(X, y, rng=rng)
 
         log_likelihoods: List[float] = []
         converged = False
@@ -321,7 +319,13 @@ class GaussianIOHMM:
 
             if it > 0:
                 improvement = log_likelihoods[-1] - log_likelihoods[-2]
-                if abs(improvement) < self.tol:
+                if improvement < -self.tol:
+                    warnings.warn(
+                        f"EM iteration {it}: log-likelihood decreased by {-improvement:.6f}. "
+                        "This may indicate numerical issues."
+                    )
+                    break
+                if improvement < self.tol:
                     converged = True
                     break
 
@@ -331,6 +335,55 @@ class GaussianIOHMM:
             converged=converged,
             n_iter=len(log_likelihoods),
         )
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> IOHMMFitResult:
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        if X.ndim != 2:
+            raise ValueError("X must be 2D.")
+        if y.ndim != 1:
+            raise ValueError("y must be 1D.")
+        if len(X) != len(y):
+            raise ValueError("X and y must have same number of rows.")
+        if len(y) < 20:
+            raise ValueError("Need more observations to fit IOHMM.")
+        if np.any(~np.isfinite(X)) or np.any(~np.isfinite(y)):
+            raise ValueError("X and y must not contain NaN or Inf values.")
+
+        if self.n_init <= 1:
+            return self._fit_single(X, y)
+
+        seed_seq = np.random.SeedSequence(self.random_state)
+        best_result: Optional[IOHMMFitResult] = None
+        best_loglik = -np.inf
+        best_state: dict = {}
+
+        for run in range(self.n_init):
+            rng = np.random.default_rng(seed_seq.spawn(1)[0]) if run > 0 else None
+            result = self._fit_single(X, y, rng=rng)
+            final_ll = result.log_likelihoods[-1]
+
+            if final_ll > best_loglik:
+                best_loglik = final_ll
+                best_result = result
+                best_state = {
+                    "emission_model": self.emission_model,
+                    "transition_model": self.transition_model,
+                    "init_log_probs_": self.init_log_probs_,
+                    "feature_mean_": self.feature_mean_,
+                    "feature_std_": self.feature_std_,
+                }
+
+        self.emission_model = best_state["emission_model"]
+        self.transition_model = best_state["transition_model"]
+        self.init_log_probs_ = best_state["init_log_probs_"]
+        self.feature_mean_ = best_state["feature_mean_"]
+        self.feature_std_ = best_state["feature_std_"]
+        self.is_fitted_ = True
+
+        assert best_result is not None
+        return best_result
 
     def predict_state_proba(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         self._ensure_fitted()
@@ -386,7 +439,7 @@ class GaussianIOHMM:
         X: np.ndarray,
         y: np.ndarray,
         state_labels: Optional[Sequence[str]] = None,
-        use_viterbi: bool = False,
+        use_viterbi: bool = True,
     ) -> pd.DataFrame:
         gamma = self.predict_state_proba(X, y)
         states = self.viterbi(X, y) if use_viterbi else np.argmax(gamma, axis=1)
