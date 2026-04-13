@@ -29,7 +29,7 @@ class MSARConfig:
 def extract_price_series(
     df: pd.DataFrame,
     ticker: str,
-    price_col: str = "Adj Close"
+    price_col: str = "Adj Close",
 ) -> pd.Series:
     if isinstance(df.columns, pd.MultiIndex):
         level0 = df.columns.get_level_values(0)
@@ -131,7 +131,8 @@ def fit_msar_model(
 
     if len(y) <= order + 10:
         raise ValueError(
-            f"Not enough observations to fit MS-AR(order={order}). Need more than {order + 10}, got {len(y)}."
+            f"Not enough observations to fit MS-AR(order={order}). "
+            f"Need more than {order + 10}, got {len(y)}."
         )
 
     model = MarkovAutoregression(
@@ -244,7 +245,7 @@ def _extract_transition_matrix(res, k_regimes: int = 2) -> np.ndarray:
 def _extract_intercepts_and_ar(
     res,
     k_regimes: int = 2,
-    order: int = 1
+    order: int = 1,
 ):
     params = pd.Series(res.params, index=res.model.param_names)
 
@@ -371,24 +372,111 @@ def evaluate_forecasts(df_forecast: pd.DataFrame) -> Dict[str, float]:
     }
 
 
+def summarize_regimes(res, returns: pd.Series) -> pd.DataFrame:
+    returns = pd.Series(returns).dropna().astype(float)
+
+    probs = np.asarray(res.smoothed_marginal_probabilities)
+    if probs.ndim == 1:
+        probs = probs.reshape(-1, 1)
+
+    common_len = min(len(returns), probs.shape[0])
+
+    aligned_returns = returns.iloc[-common_len:].copy()
+    aligned_probs = probs[-common_len:, :]
+
+    out = pd.DataFrame(index=aligned_returns.index)
+    out["return"] = aligned_returns.values
+
+    for i in range(aligned_probs.shape[1]):
+        out[f"Regime_{i}"] = aligned_probs[:, i]
+
+    regime_cols = [f"Regime_{i}" for i in range(aligned_probs.shape[1])]
+    out["most_likely_regime"] = out[regime_cols].idxmax(axis=1)
+
+    return out
+
+
+def regime_persistence_metrics(res) -> pd.DataFrame:
+    P = _extract_transition_matrix(res, k_regimes=2)
+
+    durations = []
+    for i in range(P.shape[0]):
+        pii = P[i, i]
+        expected_duration = np.inf if np.isclose(1 - pii, 0) else 1.0 / (1.0 - pii)
+        durations.append({
+            "regime": i,
+            "p_ii": float(pii),
+            "expected_duration": float(expected_duration),
+        })
+
+    return pd.DataFrame(durations)
+
+
+def regime_interpretability_metrics(res, returns: pd.Series) -> pd.DataFrame:
+    regime_df = summarize_regimes(res, returns)
+
+    rows = []
+    regime_cols = [col for col in regime_df.columns if col.startswith("Regime_")]
+    for i, regime_col in enumerate(regime_cols):
+        mask = regime_df["most_likely_regime"] == regime_col
+        subset = regime_df.loc[mask, "return"]
+
+        rows.append({
+            "regime": i,
+            "n_obs": int(mask.sum()),
+            "mean_return": float(subset.mean()) if len(subset) > 0 else np.nan,
+            "std_return": float(subset.std()) if len(subset) > 0 else np.nan,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def regime_stress_alignment_metrics(
+    res,
+    returns: pd.Series,
+    vol_window: int = 20,
+) -> Dict[str, float]:
+    regime_df = summarize_regimes(res, returns).copy()
+    regime_df["rolling_vol"] = regime_df["return"].rolling(vol_window).std()
+    regime_df["drawdown_flag"] = regime_df["return"] < regime_df["return"].quantile(0.1)
+    regime_df["high_vol_flag"] = regime_df["rolling_vol"] > regime_df["rolling_vol"].quantile(0.9)
+
+    regime_cols = [col for col in regime_df.columns if col.startswith("Regime_")]
+
+    vol_means = {}
+    for col in regime_cols:
+        vol_means[col] = regime_df[col].mul(regime_df["rolling_vol"]).mean()
+
+    high_vol_regime = max(vol_means, key=vol_means.get)
+
+    drawdown_alignment = regime_df.loc[regime_df["drawdown_flag"], high_vol_regime].mean()
+    high_vol_alignment = regime_df.loc[regime_df["high_vol_flag"], high_vol_regime].mean()
+
+    return {
+        "high_vol_regime": high_vol_regime,
+        "avg_prob_high_vol_regime_on_drawdown_days": float(drawdown_alignment) if pd.notna(drawdown_alignment) else np.nan,
+        "avg_prob_high_vol_regime_on_high_vol_days": float(high_vol_alignment) if pd.notna(high_vol_alignment) else np.nan,
+    }
+
+
 def plot_regime_probabilities(
     res,
     returns: pd.Series,
-    title: str = "Smoothed Regime Probabilities"
+    title: str = "Smoothed Regime Probabilities",
 ):
-    y = pd.Series(returns).dropna().astype(float)
-    probs = res.smoothed_marginal_probabilities.copy()
+    regime_df = summarize_regimes(res, returns)
+    regime_cols = [col for col in regime_df.columns if col.startswith("Regime_")]
 
-    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    fig, axes = plt.subplots(len(regime_cols) + 1, 1, figsize=(12, 3 * (len(regime_cols) + 1)), sharex=True)
 
-    axes[0].plot(y.index, y.values)
+    axes[0].plot(regime_df.index, regime_df["return"].values)
     axes[0].set_title("Log Returns")
     axes[0].grid(True, alpha=0.3)
 
-    for i in range(probs.shape[1]):
-        axes[i + 1].plot(probs.index, probs.iloc[:, i])
-        axes[i + 1].set_title(f"Probability of Regime {i}")
-        axes[i + 1].grid(True, alpha=0.3)
+    for i, col in enumerate(regime_cols, start=1):
+        axes[i].plot(regime_df.index, regime_df[col].values)
+        axes[i].set_title(f"Probability of {col}")
+        axes[i].grid(True, alpha=0.3)
 
     plt.suptitle(title)
     plt.tight_layout()
@@ -437,6 +525,10 @@ def run_full_msar_pipeline(config: MSARConfig) -> Dict:
 
     val_metrics = evaluate_forecasts(val_forecasts)
 
+    persistence_metrics = regime_persistence_metrics(best_res)
+    interpretability_metrics = regime_interpretability_metrics(best_res, train_df["return"])
+    stress_alignment_metrics = regime_stress_alignment_metrics(best_res, train_df["return"])
+
     return {
         "raw_data": df,
         "train": train_df,
@@ -447,4 +539,7 @@ def run_full_msar_pipeline(config: MSARConfig) -> Dict:
         "best_result": best_res,
         "validation_forecasts": val_forecasts,
         "validation_metrics": val_metrics,
+        "regime_persistence_metrics": persistence_metrics,
+        "regime_interpretability_metrics": interpretability_metrics,
+        "regime_stress_alignment_metrics": stress_alignment_metrics,
     }
