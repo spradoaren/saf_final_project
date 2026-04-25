@@ -42,10 +42,11 @@ class GaussianEmissionState:
 
 
 class GaussianEmissionModel:
-    def __init__(self, n_states: int, n_features: int, ridge: float = 1e-4):
+    def __init__(self, n_states: int, n_features: int, ridge: float = 1e-4, sigma2_floor: float = 1e-4):
         self.n_states = n_states
         self.n_features = n_features
         self.ridge = float(ridge)
+        self.sigma2_floor = float(sigma2_floor)
         self.states: List[GaussianEmissionState] = []
 
     def initialize_from_quantiles(self, X: np.ndarray, y: np.ndarray) -> None:
@@ -62,12 +63,12 @@ class GaussianEmissionModel:
             if np.sum(mask) < max(5, X1.shape[1]):
                 beta = np.zeros(X1.shape[1], dtype=float)
                 beta[0] = float(np.mean(y))
-                sigma2 = float(np.var(y) + 1e-3)
+                sigma2 = max(float(np.var(y)), self.sigma2_floor)
             else:
                 beta = self._weighted_ridge_fit(X1, y, mask.astype(float))
                 mu = X1 @ beta
                 resid = y[mask] - mu[mask]
-                sigma2 = float(np.mean(resid**2) + 1e-4)
+                sigma2 = max(float(np.mean(resid ** 2)), self.sigma2_floor)
 
             self.states.append(GaussianEmissionState(beta=beta, sigma2=sigma2))
 
@@ -94,7 +95,7 @@ class GaussianEmissionModel:
             beta = self._weighted_ridge_fit(X1, y, w)
             mu = X1 @ beta
             sigma2 = np.sum(w * (y - mu) ** 2) / max(np.sum(w), EPS)
-            sigma2 = max(float(sigma2), 1e-4)
+            sigma2 = max(float(sigma2), self.sigma2_floor)
             new_states.append(GaussianEmissionState(beta=beta, sigma2=sigma2))
 
         self.states = new_states
@@ -117,6 +118,9 @@ class SoftmaxTransitionModel:
         self.n_features = n_features
         self.l2 = float(l2)
         self.W = np.zeros((n_states, n_states, n_features + 1), dtype=float)
+
+    def _project_reference(self) -> None:
+        self.W[:, self.n_states - 1, :] = 0.0
 
     def _row_log_probs(self, X: np.ndarray, prev_state: int) -> np.ndarray:
         X1 = _add_intercept(X)
@@ -181,6 +185,8 @@ class SoftmaxTransitionModel:
                     "Keeping previous weights."
                 )
 
+        self._project_reference()
+
 
 @dataclass
 class IOHMMFitResult:
@@ -198,12 +204,13 @@ class GaussianIOHMM:
         max_iter: int = 100,
         tol: float = 1e-4,
         random_state: Optional[int] = 42,
-        n_init: int = 1,
+        n_init: int = 10,
     ):
         if n_states < 2:
             raise ValueError("n_states must be >= 2")
 
         self.n_states = int(n_states)
+        self.K = self.n_states
         self.emission_ridge = float(emission_ridge)
         self.transition_l2 = float(transition_l2)
         self.max_iter = int(max_iter)
@@ -219,6 +226,31 @@ class GaussianIOHMM:
         self.transition_model: Optional[SoftmaxTransitionModel] = None
         self.is_fitted_: bool = False
 
+        self.sigma2_floor_: float = 1e-4
+        self.smoothed_posteriors_: Optional[np.ndarray] = None
+        self.state_order_: Optional[np.ndarray] = None
+        self.best_loglik_: Optional[float] = None
+        self.bic_: Optional[float] = None
+        self.icl_: Optional[float] = None
+
+    @property
+    def beta_(self) -> np.ndarray:
+        if self.emission_model is None:
+            raise RuntimeError("Model is not initialized.")
+        return np.array([st.beta for st in self.emission_model.states])
+
+    @property
+    def sigma2_(self) -> np.ndarray:
+        if self.emission_model is None:
+            raise RuntimeError("Model is not initialized.")
+        return np.array([st.sigma2 for st in self.emission_model.states])
+
+    @property
+    def pi_(self) -> np.ndarray:
+        if self.init_log_probs_ is None:
+            raise RuntimeError("Model is not initialized.")
+        return np.exp(self.init_log_probs_)
+
     def _initialize(self, X: np.ndarray, y: np.ndarray, rng: Optional[np.random.Generator] = None) -> None:
         Xs, mean, std = _standardize_fit(X)
         self.feature_mean_ = mean
@@ -230,19 +262,24 @@ class GaussianIOHMM:
             n_states=self.n_states,
             n_features=X.shape[1],
             ridge=self.emission_ridge,
+            sigma2_floor=self.sigma2_floor_,
         )
         self.emission_model.initialize_from_quantiles(Xs, y)
-
-        if rng is not None:
-            for st in self.emission_model.states:
-                st.beta += rng.normal(scale=0.1, size=st.beta.shape)
-                st.sigma2 *= rng.uniform(0.8, 1.2)
 
         self.transition_model = SoftmaxTransitionModel(
             n_states=self.n_states,
             n_features=X.shape[1],
             l2=self.transition_l2,
         )
+
+        if rng is not None:
+            for st in self.emission_model.states:
+                scale_beta = 0.1 * (np.abs(st.beta) + 1e-2)
+                st.beta = st.beta + rng.normal(scale=scale_beta, size=st.beta.shape)
+                st.sigma2 = max(float(st.sigma2 * rng.uniform(0.5, 2.0)), self.sigma2_floor_)
+            scale_W = 0.1 * (np.abs(self.transition_model.W) + 1e-2)
+            self.transition_model.W = self.transition_model.W + rng.normal(scale=scale_W)
+            self.transition_model._project_reference()
 
     def _transform_X(self, X: np.ndarray) -> np.ndarray:
         if self.feature_mean_ is None or self.feature_std_ is None:
@@ -297,7 +334,9 @@ class GaussianIOHMM:
 
         return loglik, gamma, xi, log_alpha, log_beta
 
-    def _fit_single(self, X: np.ndarray, y: np.ndarray, rng: Optional[np.random.Generator] = None) -> IOHMMFitResult:
+    def _fit_single(
+        self, X: np.ndarray, y: np.ndarray, rng: Optional[np.random.Generator] = None
+    ) -> Optional[IOHMMFitResult]:
         self._initialize(X, y, rng=rng)
 
         log_likelihoods: List[float] = []
@@ -308,8 +347,10 @@ class GaussianIOHMM:
             log_likelihoods.append(loglik)
 
             Xs = self._transform_X(X)
-            assert self.emission_model is not None
-            assert self.transition_model is not None
+            if self.emission_model is None:
+                raise RuntimeError("Emission model missing during EM step.")
+            if self.transition_model is None:
+                raise RuntimeError("Transition model missing during EM step.")
 
             self.emission_model.fit(Xs, y, gamma)
             self.transition_model.fit(Xs, xi)
@@ -322,14 +363,13 @@ class GaussianIOHMM:
                 if improvement < -self.tol:
                     warnings.warn(
                         f"EM iteration {it}: log-likelihood decreased by {-improvement:.6f}. "
-                        "This may indicate numerical issues."
+                        "Discarding run."
                     )
-                    break
+                    return None
                 if improvement < self.tol:
                     converged = True
                     break
 
-        self.is_fitted_ = True
         return IOHMMFitResult(
             log_likelihoods=log_likelihoods,
             converged=converged,
@@ -351,19 +391,20 @@ class GaussianIOHMM:
         if np.any(~np.isfinite(X)) or np.any(~np.isfinite(y)):
             raise ValueError("X and y must not contain NaN or Inf values.")
 
-        if self.n_init <= 1:
-            return self._fit_single(X, y)
+        self.is_fitted_ = False
+        self.sigma2_floor_ = max(1e-4, 0.01 * float(np.var(y)))
 
         seed_seq = np.random.SeedSequence(self.random_state)
         best_result: Optional[IOHMMFitResult] = None
         best_loglik = -np.inf
-        best_state: dict = {}
+        best_state: Optional[dict] = None
 
         for run in range(self.n_init):
             rng = np.random.default_rng(seed_seq.spawn(1)[0]) if run > 0 else None
             result = self._fit_single(X, y, rng=rng)
+            if result is None:
+                continue
             final_ll = result.log_likelihoods[-1]
-
             if final_ll > best_loglik:
                 best_loglik = final_ll
                 best_result = result
@@ -375,23 +416,112 @@ class GaussianIOHMM:
                     "feature_std_": self.feature_std_,
                 }
 
+        if best_state is None or best_result is None:
+            raise RuntimeError(f"All {self.n_init} EM runs failed (log-likelihood diverged).")
+
         self.emission_model = best_state["emission_model"]
         self.transition_model = best_state["transition_model"]
         self.init_log_probs_ = best_state["init_log_probs_"]
         self.feature_mean_ = best_state["feature_mean_"]
         self.feature_std_ = best_state["feature_std_"]
-        self.is_fitted_ = True
+        self.best_loglik_ = best_loglik
 
-        assert best_result is not None
+        _, gamma, _, _, _ = self._forward_backward(X, y)
+        self.smoothed_posteriors_ = gamma
+
+        sigmas = np.array([st.sigma2 for st in self.emission_model.states])
+        order = np.argsort(sigmas)
+        self.state_order_ = order
+
+        self.emission_model.states = [self.emission_model.states[k] for k in order]
+
+        W = self.transition_model.W
+        W_perm = W[order][:, order, :]
+        W_perm = W_perm - W_perm[:, self.n_states - 1: self.n_states, :]
+        self.transition_model.W = W_perm
+
+        self.init_log_probs_ = self.init_log_probs_[order]
+        self.init_log_probs_ -= logsumexp(self.init_log_probs_)
+        self.smoothed_posteriors_ = self.smoothed_posteriors_[:, order]
+
+        T = len(y)
+        n_features = X.shape[1]
+        n_params = (self.K - 1) * self.K * (n_features + 1) + self.K * (n_features + 1) + (self.K - 1)
+        self.bic_ = -2 * self.best_loglik_ + n_params * np.log(T)
+        entropy = -float(np.sum(self.smoothed_posteriors_ * np.log(self.smoothed_posteriors_ + 1e-12)))
+        self.icl_ = self.bic_ + 2 * entropy
+
+        self.is_fitted_ = True
         return best_result
 
-    def predict_state_proba(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
+    def forward_filter(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         self._ensure_fitted()
-        _, gamma, _, _, _ = self._forward_backward(np.asarray(X, float), np.asarray(y, float))
-        return gamma
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if self.emission_model is None or self.transition_model is None or self.init_log_probs_ is None:
+            raise RuntimeError("Model not initialized.")
 
-    def predict_states(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
-        gamma = self.predict_state_proba(X, y)
+        Xs = self._transform_X(X)
+        T = len(y)
+        K = self.n_states
+
+        log_emiss = self.emission_model.log_likelihood_matrix(Xs, y)
+        log_trans = self.transition_model.log_transition_tensor(Xs)
+
+        log_alpha = np.full((T, K), -np.inf, dtype=float)
+        log_alpha[0] = self.init_log_probs_ + log_emiss[0]
+
+        for t in range(1, T):
+            for j in range(K):
+                log_alpha[t, j] = log_emiss[t, j] + logsumexp(log_alpha[t - 1] + log_trans[t, :, j])
+
+        return log_alpha
+
+    def forecast(
+        self,
+        X_history: np.ndarray,
+        y_history: np.ndarray,
+        x_next: np.ndarray,
+    ) -> Tuple[float, float, np.ndarray]:
+        self._ensure_fitted()
+        if self.emission_model is None or self.transition_model is None:
+            raise RuntimeError("Model not initialized.")
+
+        X_history = np.asarray(X_history, dtype=float)
+        y_history = np.asarray(y_history, dtype=float)
+        x_next = np.asarray(x_next, dtype=float).ravel()
+
+        log_alpha = self.forward_filter(X_history, y_history)
+        alpha_T = np.exp(log_alpha[-1] - logsumexp(log_alpha[-1]))
+
+        x_next_s = _standardize_apply(x_next[None, :], self.feature_mean_, self.feature_std_)
+        x_next_s1 = np.concatenate([[1.0], x_next_s[0]])
+
+        log_trans_next = self.transition_model.log_transition_tensor(x_next_s)[0]
+        p_next = alpha_T @ np.exp(log_trans_next)
+        p_next = p_next / p_next.sum()
+
+        mu_next = np.array([x_next_s1 @ st.beta for st in self.emission_model.states])
+        sigma2 = np.array([st.sigma2 for st in self.emission_model.states])
+
+        y_hat = float(p_next @ mu_next)
+        var_hat = float(p_next @ (sigma2 + (mu_next - y_hat) ** 2))
+        return y_hat, var_hat, p_next
+
+    def predict_state_proba(self, X: np.ndarray, y: np.ndarray, smoothed: bool = False) -> np.ndarray:
+        # smoothed=True uses full forward-backward (in-sample only); smoothed=False uses forward filter (OOS-safe).
+        self._ensure_fitted()
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if smoothed:
+            _, gamma, _, _, _ = self._forward_backward(X, y)
+            return gamma
+        log_alpha = self.forward_filter(X, y)
+        log_alpha_norm = log_alpha - logsumexp(log_alpha, axis=1, keepdims=True)
+        return np.exp(log_alpha_norm)
+
+    def predict_states(self, X: np.ndarray, y: np.ndarray, smoothed: bool = False) -> np.ndarray:
+        gamma = self.predict_state_proba(X, y, smoothed=smoothed)
         return np.argmax(gamma, axis=1)
 
     def viterbi(self, X: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -401,9 +531,12 @@ class GaussianIOHMM:
         y = np.asarray(y, dtype=float)
         Xs = self._transform_X(X)
 
-        assert self.emission_model is not None
-        assert self.transition_model is not None
-        assert self.init_log_probs_ is not None
+        if self.emission_model is None:
+            raise RuntimeError("Emission model not initialized.")
+        if self.transition_model is None:
+            raise RuntimeError("Transition model not initialized.")
+        if self.init_log_probs_ is None:
+            raise RuntimeError("Initial probabilities not initialized.")
 
         T = len(y)
         K = self.n_states
@@ -440,9 +573,13 @@ class GaussianIOHMM:
         y: np.ndarray,
         state_labels: Optional[Sequence[str]] = None,
         use_viterbi: bool = True,
+        smoothed: bool = True,
     ) -> pd.DataFrame:
-        gamma = self.predict_state_proba(X, y)
-        states = self.viterbi(X, y) if use_viterbi else np.argmax(gamma, axis=1)
+        gamma = self.predict_state_proba(X, y, smoothed=smoothed)
+        if use_viterbi and smoothed:
+            states = self.viterbi(X, y)
+        else:
+            states = np.argmax(gamma, axis=1)
 
         if state_labels is None:
             state_labels = [f"state_{k}" for k in range(self.n_states)]
