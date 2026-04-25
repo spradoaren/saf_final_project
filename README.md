@@ -4,7 +4,7 @@
 
 End-to-end study of regime-switching models for forecasting SPY daily
 realized volatility (and short-term returns). Three regime-switching
-tracks: Gaussian HMM, Markov-Switching AR, Input-Output HMM — are
+tracks: Gaussian HMM, Markov-Switching AR, Input-Output HMM are
 benchmarked against ARMA, HAR-RV, and GARCH(1,1) baselines under an
 expanding-window out-of-sample protocol with MSE / MAE / QLIKE and
 the Diebold-Mariano test.
