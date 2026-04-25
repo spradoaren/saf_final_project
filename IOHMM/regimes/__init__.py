@@ -1,6 +1,6 @@
 from .features import IOHMMPreparedData, build_vol_iohmm_dataset
 from .iohmm import GaussianIOHMM, IOHMMFitResult
-from .diagnostics import summarize_regimes
+from .diagnostics import summarize_regimes, check_regime_stationarity
 
 __all__ = [
     "IOHMMPreparedData",
@@ -8,4 +8,5 @@ __all__ = [
     "GaussianIOHMM",
     "IOHMMFitResult",
     "summarize_regimes",
+    "check_regime_stationarity",
 ]

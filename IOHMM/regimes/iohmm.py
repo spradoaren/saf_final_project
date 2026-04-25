@@ -445,9 +445,8 @@ class GaussianIOHMM:
         self.smoothed_posteriors_ = self.smoothed_posteriors_[:, order]
 
         T = len(y)
-        K = self.n_states
         n_features = X.shape[1]
-        n_params = K * K * (n_features + 1) + K * (n_features + 1) + K
+        n_params = (self.K - 1) * self.K * (n_features + 1) + self.K * (n_features + 1) + (self.K - 1)
         self.bic_ = -2 * self.best_loglik_ + n_params * np.log(T)
         entropy = -float(np.sum(self.smoothed_posteriors_ * np.log(self.smoothed_posteriors_ + 1e-12)))
         self.icl_ = self.bic_ + 2 * entropy
@@ -509,7 +508,8 @@ class GaussianIOHMM:
         var_hat = float(p_next @ (sigma2 + (mu_next - y_hat) ** 2))
         return y_hat, var_hat, p_next
 
-    def predict_state_proba(self, X: np.ndarray, y: np.ndarray, smoothed: bool = True) -> np.ndarray:
+    def predict_state_proba(self, X: np.ndarray, y: np.ndarray, smoothed: bool = False) -> np.ndarray:
+        # smoothed=True uses full forward-backward (in-sample only); smoothed=False uses forward filter (OOS-safe).
         self._ensure_fitted()
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
@@ -520,7 +520,7 @@ class GaussianIOHMM:
         log_alpha_norm = log_alpha - logsumexp(log_alpha, axis=1, keepdims=True)
         return np.exp(log_alpha_norm)
 
-    def predict_states(self, X: np.ndarray, y: np.ndarray, smoothed: bool = True) -> np.ndarray:
+    def predict_states(self, X: np.ndarray, y: np.ndarray, smoothed: bool = False) -> np.ndarray:
         gamma = self.predict_state_proba(X, y, smoothed=smoothed)
         return np.argmax(gamma, axis=1)
 

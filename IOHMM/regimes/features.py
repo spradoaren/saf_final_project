@@ -7,6 +7,8 @@ from typing import List, Sequence
 import numpy as np
 import pandas as pd
 
+from data_preprocessing.price_utils import extract_adjusted_close
+
 
 @dataclass
 class IOHMMPreparedData:
@@ -28,8 +30,12 @@ def _check_adapter_df(df: pd.DataFrame) -> None:
         raise ValueError("Expected 2-level MultiIndex columns: (Field, Ticker).")
 
 
-def _col(df: pd.DataFrame, field: str, ticker: str) -> pd.Series:
-    key = (field, ticker)
+def _close(df: pd.DataFrame, ticker: str) -> pd.Series:
+    return _as_float_series(extract_adjusted_close(df, ticker))
+
+
+def _volume(df: pd.DataFrame, ticker: str) -> pd.Series:
+    key = ("Volume", ticker)
     if key not in df.columns:
         raise KeyError(f"Missing column {key} in adapter dataframe.")
     return _as_float_series(df[key])
@@ -44,8 +50,9 @@ def build_vol_iohmm_dataset(
 ) -> IOHMMPreparedData:
     _check_adapter_df(df)
 
-    close_target = _col(df, "Close", target_ticker)  # adjusted prices via auto_adjust=True
-    vol_target = _col(df, "Volume", target_ticker) if ("Volume", target_ticker) in df.columns else None
+    # adjusted prices via auto_adjust=True
+    close_target = _close(df, target_ticker)
+    vol_target = _volume(df, target_ticker) if ("Volume", target_ticker) in df.columns else None
 
     r = np.log(close_target).diff()
     rv_d = r ** 2
@@ -57,7 +64,7 @@ def build_vol_iohmm_dataset(
     out["y_log_rv"] = y
 
     for ticker in external_tickers:
-        close = _col(df, "Close", ticker)
+        close = _close(df, ticker)
         ret = np.log(close).diff()
         rv = ret.rolling(rv_window_external).std() * np.sqrt(252.0)
 

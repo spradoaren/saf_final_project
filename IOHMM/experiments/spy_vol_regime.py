@@ -4,13 +4,14 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import RidgeCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from arch import arch_model
 
 from IOHMM.regimes.features import build_vol_iohmm_dataset
 from IOHMM.regimes.iohmm import GaussianIOHMM
 from data_preprocessing.data_adapter import YFinanceAdapter
+from data_preprocessing.price_utils import extract_adjusted_close
 
 
 REFIT_FREQ = 21
@@ -89,9 +90,9 @@ def main() -> None:
     dates = prepared.dates
     T = len(y)
 
-    spy_close = pd.to_numeric(raw[("Close", "SPY")], errors="coerce").astype(float)
+    spy_close = pd.to_numeric(extract_adjusted_close(raw, "SPY"), errors="coerce").astype(float)
     har_X = build_har_features(spy_close, dates)
-    r_pct = (np.log(spy_close).diff() * 100.0).reindex(dates).to_numpy()
+    r_raw = np.log(spy_close).diff().reindex(dates).to_numpy()
 
     print("Feature names:")
     for f in prepared.feature_names:
@@ -147,21 +148,10 @@ def main() -> None:
         valid_har = ~np.isnan(har_tr).any(axis=1)
         if valid_har.sum() < 50:
             warnings.warn(f"Too few valid HAR rows at t={t}; skipping HAR.")
-            ridge = None
+            har = None
         else:
-            ridge = Ridge(alpha=1.0)
-            ridge.fit(har_tr[valid_har], har_y[valid_har])
-
-        r_train = r_pct[:t]
-        r_train = r_train[~np.isnan(r_train)]
-        try:
-            garch = arch_model(r_train, vol="Garch", p=1, q=1, dist="normal", rescale=False)
-            res = garch.fit(disp="off", show_warning=False)
-            fc = res.forecast(horizon=len(X_te), reindex=False)
-            garch_var_pct2 = fc.variance.values[-1, :]
-        except Exception as e:
-            warnings.warn(f"GARCH fit failed at t={t}: {e}")
-            garch_var_pct2 = np.full(len(X_te), np.nan)
+            har = RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0, 100.0], cv=5)
+            har.fit(har_tr[valid_har], har_y[valid_har])
 
         for i, (xi, yi_true) in enumerate(zip(X_te, y_te)):
             try:
@@ -171,21 +161,27 @@ def main() -> None:
                 continue
 
             har_xi = har_X[t + i: t + i + 1]
-            if ridge is None or np.isnan(har_xi).any():
+            if har is None or np.isnan(har_xi).any():
                 y_h_har = np.nan
             else:
-                y_h_har = float(ridge.predict(har_xi)[0])
+                y_h_har = float(har.predict(har_xi)[0])
 
-            v_pct2 = garch_var_pct2[i]
-            if np.isnan(v_pct2) or v_pct2 <= 0:
+            r_tr_i = r_raw[:t + i]
+            r_tr_i = r_tr_i[~np.isnan(r_tr_i)]
+            try:
+                garch_res_i = arch_model(
+                    r_tr_i * 100, vol="Garch", p=1, q=1, dist="normal"
+                ).fit(disp="off", show_warning=False)
+                garch_var = garch_res_i.forecast(horizon=1, reindex=False).variance.values[-1, 0]
+                y_h_garch = 0.5 * np.log(garch_var / 1e4 + 1e-8)
+            except Exception as e:
+                warnings.warn(f"GARCH fit failed at t={t}+{i}: {e}")
                 y_h_garch = np.nan
-            else:
-                y_h_garch = float(np.log(v_pct2 / 1e4 + 1e-8))
 
             y_true_acc.append(float(yi_true))
             y_hat_iohmm.append(float(y_h))
             y_hat_har.append(y_h_har)
-            y_hat_garch.append(y_h_garch)
+            y_hat_garch.append(float(y_h_garch) if y_h_garch == y_h_garch else np.nan)
             state_probs_acc.append(p_next)
             dates_acc.append(dates_te[i])
 

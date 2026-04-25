@@ -1,6 +1,3 @@
-import os
-os.environ["OMP_NUM_THREADS"] = "1"
-
 import numpy as np
 import pandas as pd
 
@@ -72,9 +69,8 @@ def rolling_ic_train_window(X, window=120, n_states=4):
 
 def get_data(start_date, test_date, end_date, freq):
     adapter = YFinanceAdapter()
-    data = adapter.get_data(tickers="^GSPC", start_date=start_date, end_date=end_date)
-    # auto_adjust=True ⇒ Close is the adjusted price
-    df = data[["Open", "High", "Low", "Close"]].dropna()
+    raw = adapter.get_data(tickers="^GSPC", start_date=start_date, end_date=end_date)
+    df = raw.xs("^GSPC", level="Ticker", axis=1)[["Open", "High", "Low", "Close"]].dropna()
     df = df.resample(freq).last()
     train = df.loc[start_date:test_date].copy()
     test = df.loc[test_date:end_date].copy()
@@ -103,25 +99,40 @@ def backtest(n_states, freq,
 
     n_steps = len(test_r) - 1
     n_features = train_r.shape[1]
-    preds = np.zeros((n_steps, n_features))
-    actuals = test_r.values[1:]
 
+    y_train = train_r.values
+    y_test = test_r.values
+    actuals = y_test[1:]
+
+    y_hat = np.zeros((n_steps, n_features))
     for i in range(n_steps):
-        history = np.vstack([train_r.values, test_r.values[: i + 1]])
+        history = np.vstack([y_train, y_test[: i + 1]])
         state_now = int(model.predict(history)[-1])
-        next_state_dist = transmat[state_now]
-        preds[i] = next_state_dist @ means
+        y_hat[i] = transmat[state_now] @ means
 
-    mse_per_feature = np.mean((actuals - preds) ** 2, axis=0)
+    y_naive = y_test[:n_steps]
+
+    y_ar1 = np.zeros((n_steps, n_features))
+    train_window = y_train[-252:]
+    for f in range(n_features):
+        col = train_window[:, f]
+        a, b = np.polyfit(col[:-1], col[1:], 1)
+        y_ar1[:, f] = a * y_test[:n_steps, f] + b
+
+    def mse(a, b):
+        return float(np.mean((a - b) ** 2))
+
     return {
-        "n_steps": int(n_steps),
-        "mse_per_feature": mse_per_feature.tolist(),
-        "mse_total": float(np.mean(mse_per_feature)),
-        "feature_names": list(train_r.columns),
+        "mse_hmm": mse(actuals, y_hat),
+        "mse_naive": mse(actuals, y_naive),
+        "mse_ar1": mse(actuals, y_ar1),
     }
 
 
 if __name__ == "__main__":
+    import os
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+
     ic_df = hmm_pipeline(n_states=4, window=120, freq="W")
     print(ic_df)
     bt = backtest(n_states=4, freq="W")
