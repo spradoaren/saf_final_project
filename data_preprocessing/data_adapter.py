@@ -106,7 +106,6 @@ class YFinanceAdapter(DataAdapter):
 
         tickers_list = self._normalize_tickers(tickers)
 
-        # yfinance end date is exclusive, so add one day
         yf_end = (end_d + timedelta(days=1)).strftime("%Y-%m-%d")
 
         dfs: List[pd.DataFrame] = []
@@ -133,11 +132,12 @@ class YFinanceAdapter(DataAdapter):
                     )
 
             try:
+                # adjusted prices: auto_adjust=True so Close is split/dividend-adjusted
                 df = yf.download(
                     tickers=ticker,
                     start=start_date,
                     end=yf_end,
-                    auto_adjust=False,
+                    auto_adjust=True,
                     progress=False,
                     timeout=20,
                     group_by="column",
@@ -150,9 +150,6 @@ class YFinanceAdapter(DataAdapter):
                 df.index = pd.to_datetime(df.index)
                 df.index.name = "Date"
 
-                # Single-ticker downloads often come back with plain columns like
-                # Open, High, Low, Close, Adj Close, Volume. Normalize to a
-                # consistent (Price, Ticker) MultiIndex.
                 if isinstance(df.columns, pd.MultiIndex):
                     if df.columns.nlevels != 2:
                         raise ValueError(
@@ -162,19 +159,19 @@ class YFinanceAdapter(DataAdapter):
                     level0 = list(df.columns.get_level_values(0))
                     level1 = list(df.columns.get_level_values(1))
 
+                    price_fields = {"Open", "High", "Low", "Close", "Volume"}
+
                     if all(str(x).upper() == ticker for x in level1):
                         df.columns = pd.MultiIndex.from_arrays(
                             [level0, level1],
                             names=["Price", "Ticker"],
                         )
-                    elif all(str(x) in {"Open", "High", "Low", "Close", "Adj Close", "Volume"} for x in level1):
-                        # In some cases the order comes back reversed.
+                    elif all(str(x) in price_fields for x in level1):
                         df.columns = pd.MultiIndex.from_arrays(
                             [level1, level0],
                             names=["Price", "Ticker"],
                         )
                     else:
-                        # Force names even if already structurally correct.
                         df.columns.names = ["Price", "Ticker"]
                 else:
                     df.columns = pd.MultiIndex.from_product(
@@ -182,7 +179,6 @@ class YFinanceAdapter(DataAdapter):
                         names=["Price", "Ticker"],
                     )
 
-                # Sort columns for deterministic output/cache.
                 df = df.sort_index(axis=1)
 
                 df.to_parquet(cache_path)
