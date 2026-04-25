@@ -7,6 +7,17 @@ import numpy as np
 import pandas as pd
 from hmmlearn.hmm import GaussianHMM
 
+from utils.diagnostics import summarize_regimes
+from utils.metrics import (
+    rmse as _rmse,
+    mae as _mae,
+    mse as _mse,
+    directional_accuracy as _directional_accuracy,
+)
+
+# Backward-compatible alias for the British spelling used by older notebooks.
+summarise_regimes = summarize_regimes
+
 
 @dataclass
 class RegimeForecastResult:
@@ -128,51 +139,6 @@ def filtered_state_probabilities(model: GaussianHMM, X: np.ndarray) -> np.ndarra
 
 
 
-def summarise_regimes(
-    model: GaussianHMM,
-    X: np.ndarray,
-    index: pd.Index,
-    return_series: pd.Series,
-) -> pd.DataFrame:
-    """
-    Summarize each inferred regime using return-based statistics.
-    """
-
-    probs = filtered_state_probabilities(model, X)
-    states = probs.argmax(axis=1)
-
-    df = pd.DataFrame(index=index)
-    df["state"] = states
-    df["return"] = return_series.reindex(index)
-
-    rows = []
-    total_n = len(df)
-
-    for s in range(model.n_components):
-        mask = df["state"] == s
-        sub = df.loc[mask, "return"].dropna()
-
-        mean_ret = float(sub.mean()) if len(sub) else np.nan
-        vol = float(sub.std()) if len(sub) else np.nan
-        sharpe_like = np.nan if vol in [0, np.nan] else mean_ret / vol
-
-        rows.append(
-            {
-                "state": s,
-                "count": int(mask.sum()),
-                "fraction": float(mask.mean()),
-                "avg_return": mean_ret,
-                "volatility": vol,
-                "annualised_return_approx": float(mean_ret * 252) if len(sub) else np.nan,
-                "annualised_vol_approx": float(vol * np.sqrt(252)) if len(sub) else np.nan,
-                "return_to_vol_ratio": sharpe_like,
-            }
-        )
-
-    return pd.DataFrame(rows).sort_values("avg_return").reset_index(drop=True)
-
-
-
 def _fit_ar1(y: pd.Series) -> Tuple[float, float]:
     y = y.dropna()
     if len(y) < 5:
@@ -249,7 +215,7 @@ def rolling_regime_forecast(
 
     metrics = evaluate_forecasts(pred_df)
     final_model = fit_hmm(train_feat.values, n_states=n_states)
-    summary = summarise_regimes(final_model, train_feat.values, train_feat.index, aligned_returns)
+    summary = summarize_regimes(final_model, train_feat.values, train_feat.index, aligned_returns)
 
     return RegimeForecastResult(summary=summary, predictions=pred_df, metrics=metrics, model=final_model)
 
@@ -274,11 +240,11 @@ def evaluate_forecasts(pred_df: pd.DataFrame) -> pd.DataFrame:
 
         err = y_true - y_pred
 
-        mae = float(np.abs(err).mean())
-        mse = float((err ** 2).mean())
-        rmse = float(np.sqrt(mse))
+        mae = _mae(y_true, y_pred)
+        mse = _mse(y_true, y_pred)
+        rmse = _rmse(y_true, y_pred)
 
-        directional_accuracy = float((np.sign(y_true) == np.sign(y_pred)).mean())
+        directional_accuracy = _directional_accuracy(y_true, y_pred)
 
         # Out-of-sample R^2 relative to a zero-return benchmark
         denom = float((y_true ** 2).sum())

@@ -24,15 +24,27 @@ ARMA/
     spy_return_benchmark_model.ipynb
                                M0 mean, M1 RW, M2 AR(p), M3 ARMA(p,q),
                                rolling 1-step forecast, Theil's U.
-HMM/
-    adapter.py                 Re-export of canonical adapter.
+HMM_weekly_vol/
     model_utils.py             hmmlearn GaussianHMM wrapper, IC helpers,
                                rolling in-sample IC, backtest with naive +
                                AR(1) benchmarks.
+    results.ipynb              Consolidated notebook for the weekly-vol
+                               HMM track.
+HMM_daily_return/
+    return_regime_utils.py     hmmlearn GaussianHMM wrapper for daily
+                               return regimes plus regime persistence,
+                               stress alignment, and interpretability
+                               diagnostics.
+    model.ipynb                Daily-return regime walkthrough.
 Markov_Switching_AR/
-    adapter.py                 Re-export of canonical adapter.
     model_utils.py             statsmodels MarkovAutoregression wrapper,
                                grid search, rolling forecast.
+    results.ipynb              Consolidated notebook for the MS-AR track.
+utils/
+    metrics.py                 Shared rmse / mae / mse / directional
+                               accuracy / qlike / dm_stat.
+    diagnostics.py             Shared summarize_regimes (DataFrame and
+                               fitted-model dispatch).
 IOHMM/
     regimes/features.py        build_vol_iohmm_dataset: external features
                                and y = log(r_{t+1}^2 + eps).
@@ -148,10 +160,8 @@ End-to-end sequence (from repository root):
    and write `spy_train_*.csv` / `spy_test_*.csv`.
 2. `01_Data_Preprocessing_EDA/spy_in_sample_return_eda.ipynb` — EDA.
 3. `ARMA/spy_return_benchmark_model.ipynb` — ARMA baselines.
-4. `HMM/test_basic.ipynb` → `HMM/test_model.ipynb` → `HMM/result.ipynb`.
-5. `Markov_Switching_AR/test_basic.ipynb` →
-   `Markov_Switching_AR/test_model.ipynb` →
-   `Markov_Switching_AR/result.ipynb`.
+4. `HMM_weekly_vol/results.ipynb`.
+5. `Markov_Switching_AR/results.ipynb`.
 6. `python -m IOHMM.experiments.spy_vol_regime` — run the IOHMM
    expanding-window experiment.
 7. `IOHMM/experiments/spy_vol_regime_analysis.ipynb` — render results.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import warnings
 
 import numpy as np
@@ -8,41 +9,24 @@ from sklearn.linear_model import RidgeCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from arch import arch_model
 
-from IOHMM.regimes.features import build_vol_iohmm_dataset
+from IOHMM.regimes.features import build_har_features, build_vol_iohmm_dataset
 from IOHMM.regimes.iohmm import GaussianIOHMM
 from data_preprocessing.data_adapter import YFinanceAdapter
 from data_preprocessing.price_utils import extract_adjusted_close
+from utils.metrics import dm_stat, qlike
 
 
+# Defaults preserved from the original implementation. They are exposed
+# via ``main`` arguments so callers can override at the call site
+# without editing this file.
 REFIT_FREQ = 21
 MIN_TRAIN = 504
 K_VALUES = (2, 3, 4)
 
 
-def build_har_features(close: pd.Series, dates: pd.DatetimeIndex) -> np.ndarray:
-    r = np.log(close).diff()
-    rv_d = r ** 2
-    rv_w = rv_d.rolling(5).mean()
-    rv_m = rv_d.rolling(22).mean()
-    feat = pd.DataFrame(
-        {
-            "log_rv_d_lag1": np.log(rv_d + 1e-8).shift(1),
-            "log_rv_w_lag1": np.log(rv_w + 1e-8).shift(1),
-            "log_rv_m_lag1": np.log(rv_m + 1e-8).shift(1),
-        }
-    )
-    return feat.reindex(dates).to_numpy()
-
-
-def qlike(rv_true: np.ndarray, rv_hat: np.ndarray) -> float:
-    rv_hat = np.maximum(rv_hat, 1e-12)
-    rv_true = np.maximum(rv_true, 1e-12)
-    return float(np.mean(rv_true / rv_hat - np.log(rv_true / rv_hat) - 1.0))
-
-
-def dm_stat(e1: np.ndarray, e2: np.ndarray) -> float:
-    d = e1 - e2
-    return float(np.mean(d) / (np.std(d, ddof=1) / np.sqrt(len(d))))
+# Absolute path to this experiment directory, used to anchor CSV outputs
+# regardless of the current working directory at run time.
+_EXPERIMENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def per_regime_metrics(y_true: np.ndarray, y_hat: np.ndarray, dom_state: np.ndarray, K: int) -> pd.DataFrame:
@@ -66,7 +50,11 @@ def per_regime_metrics(y_true: np.ndarray, y_hat: np.ndarray, dom_state: np.ndar
     return pd.DataFrame(rows)
 
 
-def main() -> None:
+def main(
+    min_train: int = MIN_TRAIN,
+    refit_freq: int = REFIT_FREQ,
+    k_values=K_VALUES,
+) -> None:
     adapter = YFinanceAdapter()
     tickers = ["SPY", "TLT", "HYG", "UUP", "GLD"]
 
@@ -99,14 +87,14 @@ def main() -> None:
         print(f"  - {f}")
 
     print(f"\nTotal observations: {T}")
-    print(f"Min train: {MIN_TRAIN}, refit freq: {REFIT_FREQ}")
+    print(f"Min train: {min_train}, refit freq: {refit_freq}")
 
     bic_icl: dict = {}
-    init_train_end = MIN_TRAIN
+    init_train_end = min_train
     X_tr0 = X[:init_train_end]
     y_tr0 = y[:init_train_end]
 
-    for K in K_VALUES:
+    for K in k_values:
         m = GaussianIOHMM(n_states=K, max_iter=100, n_init=10, random_state=42)
         try:
             m.fit(X_tr0, y_tr0)
@@ -128,9 +116,9 @@ def main() -> None:
 
     iohmm = GaussianIOHMM(n_states=best_K, max_iter=100, n_init=10, random_state=42)
 
-    for t in range(MIN_TRAIN, T - 1, REFIT_FREQ):
+    for t in range(min_train, T - 1, refit_freq):
         X_tr, y_tr = X[:t], y[:t]
-        end = min(t + REFIT_FREQ, T - 1)
+        end = min(t + refit_freq, T - 1)
         X_te, y_te = X[t:end], y[t:end]
         dates_te = dates[t:end]
 
@@ -249,10 +237,10 @@ def main() -> None:
             "dom_state": dom_state,
         }
     )
-    out.to_csv("spy_vol_iohmm_results.csv", index=False)
-    metrics_df.to_csv("spy_vol_iohmm_metrics.csv", index=False)
-    pr.to_csv("spy_vol_iohmm_per_regime.csv", index=False)
-    bic_icl_df.to_csv("spy_vol_iohmm_kselect.csv", index=False)
+    out.to_csv(os.path.join(_EXPERIMENT_DIR, "spy_vol_iohmm_results.csv"), index=False)
+    metrics_df.to_csv(os.path.join(_EXPERIMENT_DIR, "spy_vol_iohmm_metrics.csv"), index=False)
+    pr.to_csv(os.path.join(_EXPERIMENT_DIR, "spy_vol_iohmm_per_regime.csv"), index=False)
+    bic_icl_df.to_csv(os.path.join(_EXPERIMENT_DIR, "spy_vol_iohmm_kselect.csv"), index=False)
 
 
 if __name__ == "__main__":
