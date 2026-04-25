@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from hmmlearn.hmm import GaussianHMM
-from adapter import YFinanceAdapter
+from data_preprocessing.data_adapter import YFinanceAdapter
 
 
 random_seed = 42

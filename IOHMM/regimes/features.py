@@ -41,6 +41,21 @@ def _volume(df: pd.DataFrame, ticker: str) -> pd.Series:
     return _as_float_series(df[key])
 
 
+def build_har_features(close: pd.Series, dates: pd.DatetimeIndex) -> np.ndarray:
+    r = np.log(close).diff()
+    rv_d = r ** 2
+    rv_w = rv_d.rolling(5).mean()
+    rv_m = rv_d.rolling(22).mean()
+    feat = pd.DataFrame(
+        {
+            "log_rv_d_lag1": np.log(rv_d + 1e-8).shift(1),
+            "log_rv_w_lag1": np.log(rv_w + 1e-8).shift(1),
+            "log_rv_m_lag1": np.log(rv_m + 1e-8).shift(1),
+        }
+    )
+    return feat.reindex(dates).to_numpy()
+
+
 def build_vol_iohmm_dataset(
     df: pd.DataFrame,
     target_ticker: str = "SPY",
