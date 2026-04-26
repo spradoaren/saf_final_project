@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import RidgeCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.model_selection import TimeSeriesSplit
 from arch import arch_model
 
 from IOHMM.regimes.features import build_har_features, build_vol_iohmm_dataset
@@ -138,12 +139,16 @@ def main(
             warnings.warn(f"Too few valid HAR rows at t={t}; skipping HAR.")
             har = None
         else:
-            har = RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0, 100.0], cv=5)
+            n_har = int(valid_har.sum())
+            har_cv = TimeSeriesSplit(n_splits=min(5, max(2, n_har - 1)))
+            har = RidgeCV(alphas=[0.01, 0.1, 1.0, 10.0, 100.0], cv=har_cv)
             har.fit(har_tr[valid_har], har_y[valid_har])
 
         for i, (xi, yi_true) in enumerate(zip(X_te, y_te)):
+            X_hist = X[: t + i]
+            y_hist = y[: t + i]
             try:
-                y_h, _, p_next = iohmm.forecast(X_tr, y_tr, xi)
+                y_h, _, p_next = iohmm.forecast(X_hist, y_hist, xi)
             except Exception as e:
                 warnings.warn(f"IOHMM forecast failed at t={t}+{i}: {e}")
                 continue
@@ -161,7 +166,7 @@ def main(
                     r_tr_i * 100, vol="Garch", p=1, q=1, dist="normal"
                 ).fit(disp="off", show_warning=False)
                 garch_var = garch_res_i.forecast(horizon=1, reindex=False).variance.values[-1, 0]
-                y_h_garch = 0.5 * np.log(garch_var / 1e4 + 1e-8)
+                y_h_garch = np.log(garch_var / 1e4 + 1e-8)
             except Exception as e:
                 warnings.warn(f"GARCH fit failed at t={t}+{i}: {e}")
                 y_h_garch = np.nan

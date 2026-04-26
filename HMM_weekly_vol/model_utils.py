@@ -72,8 +72,9 @@ def get_data(start_date, test_date, end_date, freq):
     raw = adapter.get_data(tickers="^GSPC", start_date=start_date, end_date=end_date)
     df = raw.xs("^GSPC", level="Ticker", axis=1)[["Open", "High", "Low", "Close"]].dropna()
     df = df.resample(freq).last()
-    train = df.loc[start_date:test_date].copy()
-    test = df.loc[test_date:end_date].copy()
+    cutoff = pd.Timestamp(test_date)
+    train = df.loc[df.index < cutoff].copy()
+    test = df.loc[df.index >= cutoff].loc[:end_date].copy()
     return train, test
 
 
