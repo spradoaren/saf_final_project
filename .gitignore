@@ -1,5 +1,8 @@
-data_preprocessing/__pycache__/price_utils.cpython-39.pyc
-data/yfinance_cache/SPY_895ac6b493263be1f373574e280d5e3f.parquet
-.claude/settings.local.json
-data_preprocessing/__pycache__/data_adapter.cpython-310.pyc
-/data_preprocessing/__pycache__
+.DS_Store
+__pycache__/
+*.pyc
+data/yfinance_cache/
+.venv/
+# IOHMM experiment outputs 
+IOHMM/experiments/*.csv
+*.egg-info/

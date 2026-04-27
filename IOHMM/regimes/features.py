@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from data_preprocessing.price_utils import extract_adjusted_close
+from utils.targets import build_log_rv_target
 
 
 @dataclass
@@ -71,9 +72,9 @@ def build_vol_iohmm_dataset(
 
     r = np.log(close_target).diff()
     rv_d = r ** 2
-    rv_w = r.rolling(5).mean()
-    rv_m = r.rolling(22).mean()
-    y = np.log(rv_d.shift(-1) + 1e-8)
+    rv_w = rv_d.rolling(5).mean()
+    rv_m = rv_d.rolling(22).mean()
+    y = build_log_rv_target(close_target, horizon=5)
 
     out = pd.DataFrame(index=df.index)
     out["y_log_rv"] = y

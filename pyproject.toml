@@ -1,0 +1,33 @@
+# Build configuration for saf-final-project (plan.md task 5.2).
+#
+# Divergence from plan.md note: plan.md §5.2 lists eight packages to
+# export. This file declares only the six that exist today.
+# `config` and `experiments` are omitted — tasks 4.1 and 4.4 will
+# create them with real content and add the package declarations
+# alongside. Declaring empty packages now would require stub
+# __init__.py files we'd have to remember exist.
+# When 4.1 / 4.4 land, add `config` and `experiments` to the
+# `[tool.setuptools] packages = [...]` list below.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saf-final-project"
+version = "0.1.0"
+description = "SPY volatility regime modeling: HMM, IOHMM, and switching baselines"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+packages = [
+    "data_preprocessing",
+    "utils",
+    "IOHMM",
+    "IOHMM.regimes",
+    "IOHMM.experiments",
+    "HMM_weekly_vol",
+    "HMM_daily_return",
+    "Markov_Switching_AR",
+]
