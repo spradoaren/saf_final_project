@@ -57,3 +57,46 @@ def get_canonical_obs(
     """Return GKVolFeatures().fit_transform(rv_gk) for HMM observations."""
     rv = get_canonical_rv_gk(ticker=ticker, start=start, end=end)
     return GKVolFeatures().fit_transform(rv)
+
+
+def _forward_5_mean(rv: pd.Series) -> pd.Series:
+    """Forward 5-day rolling mean: y[t] = mean(rv[t+1..t+5]).
+
+    Implementation: rv.rolling(5).mean().shift(-5). The unshifted rolling
+    mean at index i is mean(rv[i-4..i]); shifting by -5 moves the value at
+    index i+5 to index i, giving y[i] = mean(rv[i+1..i+5]). Last 5 rows
+    are NaN by construction. Assumes rv has no NaN; otherwise NaN
+    propagates from the rolling step.
+    """
+    return rv.rolling(window=5, min_periods=5).mean().shift(-5)
+
+
+def get_canonical_rv_gk_h5(
+    ticker: str = "SPY",
+    start: str = "2019-01-01",
+    end: str = "2024-12-31",
+    cache_dir: str = "experiments/cache",
+) -> pd.Series:
+    """Return canonical 5-day forward-average rv_gk target.
+
+    y_t = (1/5) * sum(rv_gk[t+1..t+5])
+
+    Built from the same cached ``get_canonical_rv_gk`` series so the
+    underlying daily rv_gk values are bit-equal to the h=1 track. Last 5
+    rows are NaN by construction.
+    """
+    cache_path = Path(cache_dir) / f"rv_gk_h5_{ticker}_{start}_{end}.parquet"
+
+    if cache_path.exists():
+        df = pd.read_parquet(cache_path)
+        y = df["rv_gk_h5"].astype(np.float64)
+        y.index = pd.to_datetime(y.index)
+        y.name = "rv_gk_h5"
+        return y
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    rv = get_canonical_rv_gk(ticker=ticker, start=start, end=end)
+    y = _forward_5_mean(rv).astype(np.float64)
+    y.name = "rv_gk_h5"
+    y.to_frame().to_parquet(cache_path)
+    return y
