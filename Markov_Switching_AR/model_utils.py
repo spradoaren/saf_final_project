@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.regime_switching.markov_autoregression import MarkovAutoregression
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
-from adapter import YFinanceAdapter
+from data_preprocessing.data_adapter import YFinanceAdapter
 from data_preprocessing.price_utils import extract_adjusted_close
 
 
