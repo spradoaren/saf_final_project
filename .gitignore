@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 data/yfinance_cache/
+experiments/cache/
 .venv/
 # IOHMM experiment outputs 
 IOHMM/experiments/*.csv
