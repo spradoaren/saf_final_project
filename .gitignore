@@ -2,10 +2,7 @@
 __pycache__/
 *.pyc
 data/yfinance_cache/
-.claude/
 .venv/
-
-# IOHMM experiment outputs (regenerated)
+# IOHMM experiment outputs 
 IOHMM/experiments/*.csv
-
 *.egg-info/
