@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -63,6 +63,7 @@ def build_vol_iohmm_dataset(
     external_tickers: Sequence[str] = ("TLT", "HYG", "UUP", "GLD"),
     rv_window_external: int = 5,
     strictly_external_inputs: bool = True,
+    target: Optional[pd.Series] = None,
 ) -> IOHMMPreparedData:
     _check_adapter_df(df)
 
@@ -74,7 +75,13 @@ def build_vol_iohmm_dataset(
     rv_d = r ** 2
     rv_w = rv_d.rolling(5).mean()
     rv_m = rv_d.rolling(22).mean()
-    y = build_log_rv_target(close_target, horizon=5)
+
+    # If `target` is provided, use it as-is (reindexed to df.index). Otherwise
+    # fall back to the legacy 5-day forward log-RV target.
+    if target is None:
+        y = build_log_rv_target(close_target, horizon=5)
+    else:
+        y = pd.Series(target).astype(float).reindex(df.index)
 
     out = pd.DataFrame(index=df.index)
     out["y_log_rv"] = y
