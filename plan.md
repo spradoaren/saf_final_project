@@ -227,6 +227,13 @@ All actions in this phase change the prediction target to `y_t = log(RV²_{t+1} 
 - **Action:** Notebook imports `YFinanceAdapter` from `data_preprocessing.data_adapter` instead of redefining it. Decide whether to keep `Markov_Switching_AR/adapter.py` re-export.
 - **Validation:** Grep for `class YFinanceAdapter` returns exactly one match.
 
+#### 5.3a Migrate `01_Data_Preprocessing_EDA/data_adapter.ipynb` to canonical adapter (deferred follow-up to §5.3)
+- **File:** `01_Data_Preprocessing_EDA/data_adapter.ipynb`
+- **Issue:** The notebook currently defines its own `YFinanceAdapter` (flat-column, CSV cache, no retries). Cells 3–6 depend on the notebook's flat `'SPY'` column convention to produce `spy_train_*.csv` / `spy_test_*.csv`. Substituting canonical (which returns a `(Price, Ticker)` MultiIndex) without adapting the consumer cells would silently change the on-disk CSV schema that downstream tracks read.
+- **Action:** Edit cells 3–6 to extract `Close` from canonical's MultiIndex output while preserving the existing on-disk CSV schema. Then replace the inline `class YFinanceAdapter` definition (cell 1) with `from data_preprocessing.data_adapter import YFinanceAdapter`.
+- **Validation:** Re-run the notebook and diff the resulting CSVs against the current ones — they must be byte-equivalent (or equivalent-after-known-schema-changes documented here). After this lands, the §5.3 grep validation (`class YFinanceAdapter` returns exactly one match) finally passes.
+- **Note:** Naturally bundled with task 1.4 (rewriting the HMM weekly notebook against canonical) since the same migration pattern applies.
+
 #### 5.4 Unit tests
 - **File:** new `tests/` directory
 - **Action:** Add pytest tests for: (a) `extract_adjusted_close` on canonical MultiIndex; (b) `build_log_rv_target` on synthetic constant-vol series; (c) `build_vol_iohmm_dataset` row counts and target alignment to t+1; (d) IOHMM forward filter equality with `_forward_backward` marginals on a 2-state synthetic; (e) `compute_all_metrics` on synthetic input with known answers; (f) `dm_stat` HAC equal-loss and unequal-loss tests; (g) MS-AR parameter extraction.
