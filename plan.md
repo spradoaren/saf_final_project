@@ -173,6 +173,12 @@ All actions in this phase change the prediction target to `y_t = log(RV²_{t+1} 
 - **Action:** Add a docstring section "Conventions" stating: `X[t]` drives the `s_{t-1} → s_t` transition and the emission at t; `forecast(X_hist, y_hist, x_next)` predicts one step ahead where `x_next` is the input observed at t+1.
 - **Validation:** Docstring renders. No code change required.
 
+#### 3.10 IOHMM external-features log-transform consistency
+- **File:** `IOHMM/regimes/features.py:91-93`
+- **Issue:** The `lag1_log_rv_d_{ticker}` column wraps in `np.log(... + eps)`; the sibling `lag1_log_rv_w_{ticker}` and `lag1_log_rv_m_{ticker}` columns do NOT. The names imply a log-transform; the values are raw rolling means. Dormant under `strictly_external_inputs=True` (the default), surfaced when external inputs are turned off.
+- **Action:** Wrap both in `np.log(... + DEFAULT_EPS).shift(1)` to match the daily sibling.
+- **Validation:** Bit-equal to `build_har_features`'s `log_rv_w_lag1` / `log_rv_m_lag1` columns on the same input.
+
 ---
 
 ### Phase 4 — Evaluation Framework Unification
