@@ -395,6 +395,29 @@ class ReturnSignalWF(WalkForwardHMM):
         return 1.0 if predicted_state == bull_state else 0.0
 
 
+class ReturnForecastWF(WalkForwardHMM):
+    """
+    Walk-forward -> continuous next-day return forecast for return notebooks.
+
+    Forecast = emission mean of ``forecast_col`` for the predicted next state.
+    For the default ``forecast_col=1``, this returns predicted ``log_return_1d``.
+
+    Parameters
+    ----------
+    forecast_col : feature column index whose emission mean becomes the forecast.
+                   Default 1 = log_return_1d in the ReturnFeatures triple.
+    **kwargs     : forwarded to WalkForwardHMM.
+    """
+
+    def __init__(self, forecast_col: int = 1, **kwargs):
+        super().__init__(**kwargs)
+        self.forecast_col = forecast_col
+
+    def _output_value(self, model, predicted_state, obs_df, t):
+        means = model.emission_means_original()[:, self.forecast_col]
+        return float(means[predicted_state])
+
+
 class RVForecastWF(WalkForwardHMM):
     """
     Walk-forward → continuous RV point forecast for volatility notebooks.
