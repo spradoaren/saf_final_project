@@ -285,19 +285,20 @@ Apply in strict order. Do not start step N+1 until step N validates.
 17. **3.7** Tighten state-label coherence in HMM_daily_return.
 18. **3.8** Make MS-AR parameter extraction robust.
 19. **3.9** Document IOHMM forecast convention.
-20. **3.1** Retarget ARMA to `log RV²`.
-21. **3.2** Retarget MS-AR to `log RV²`.
-22. **3.3** Retarget HMM_weekly_vol to `log RV²`.
-23. **3.4** Retarget HMM_daily_return to `log RV²`.
-24. **4.1** Create `config/experiment_config.py` with shared constants.
-25. **4.2** Apply shared OOS protocol across all tracks.
-26. **4.3** Implement `ExpandingWindowEvaluator` in `utils/evaluation.py`.
-27. **4.5** Per-regime metrics for all regime models.
-28. **4.4** Implement `experiments/run_all.py`. Produce `unified_metrics.csv` and `dm_matrix.csv`.
-29. **5.6** Centralize failure logging.
-30. **5.4** Add unit tests in `tests/`.
-31. **5.5** Add CI workflow.
-32. **5.7** Update README.
+20. **3.10** IOHMM external-features log-transform consistency.
+21. **3.1** Retarget ARMA to `log RV²`.
+22. **3.2** Retarget MS-AR to `log RV²`.
+23. **3.3** Retarget HMM_weekly_vol to `log RV²`.
+24. **3.4** Retarget HMM_daily_return to `log RV²`.
+25. **4.1** Create `config/experiment_config.py` with shared constants.
+26. **4.2** Apply shared OOS protocol across all tracks.
+27. **4.3** Implement `ExpandingWindowEvaluator` in `utils/evaluation.py`.
+28. **4.5** Per-regime metrics for all regime models.
+29. **4.4** Implement `experiments/run_all.py`. Produce `unified_metrics.csv` and `dm_matrix.csv`.
+30. **5.6** Centralize failure logging.
+31. **5.4** Add unit tests in `tests/`.
+32. **5.5** Add CI workflow.
+33. **5.7** Update README.
 
 ---
 
