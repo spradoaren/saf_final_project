@@ -7,3 +7,5 @@ data/yfinance_cache/
 
 # IOHMM experiment outputs (regenerated)
 IOHMM/experiments/*.csv
+
+*.egg-info/
