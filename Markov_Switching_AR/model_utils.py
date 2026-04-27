@@ -234,7 +234,11 @@ def grid_search_msar(
 
 
 def _extract_transition_matrix(result, k_regimes):
-    return np.array([[result.transition[j, i] for j in range(k_regimes)]
+    # statsmodels stores the regime transition as a 3D array
+    # regime_transition[to, from, t]; for time-homogeneous chains the t
+    # axis has length 1. Build M[i, j] = P(next = j | now = i).
+    rt = result.regime_transition
+    return np.array([[rt[j, i, 0] for j in range(k_regimes)]
                      for i in range(k_regimes)])
 
 
@@ -243,6 +247,15 @@ def _extract_intercepts_and_ar(
     k_regimes: int = 2,
     order: int = 1
 ):
+    """Extract regime intercepts and AR coefficients from a fitted MS-AR result.
+
+    Returns
+    -------
+    intercepts : ndarray, shape (k_regimes,)
+    ar_coefs   : ndarray, shape (k_regimes, order). For switching_ar=False
+                 (shared AR), each regime's row is identical (broadcast).
+                 For switching_ar=True, rows are regime-specific.
+    """
     params = pd.Series(res.params, index=res.model.param_names)
 
     intercepts = []
@@ -252,14 +265,23 @@ def _extract_intercepts_and_ar(
             raise ValueError(f"Could not find intercept for regime {r}.")
         intercepts.append(float(params[name_candidates[0]]))
 
-    ar_coefs = []
+    ar_coefs = np.zeros((k_regimes, order), dtype=float)
     for lag in range(1, order + 1):
-        name_candidates = [x for x in params.index if f"ar.L{lag}" in x]
-        if len(name_candidates) == 0:
-            raise ValueError(f"Could not find AR coefficient for lag {lag}.")
-        ar_coefs.append(float(params[name_candidates[0]]))
+        shared_key = f"ar.L{lag}"
+        if shared_key in params.index:
+            shared = float(params[shared_key])
+            ar_coefs[:, lag - 1] = shared
+        else:
+            for r in range(k_regimes):
+                key = f"ar.L{lag}[{r}]"
+                if key not in params.index:
+                    raise ValueError(
+                        f"Could not find AR coefficient for lag {lag}, regime {r} "
+                        f"(looked for '{key}' and shared '{shared_key}')."
+                    )
+                ar_coefs[r, lag - 1] = float(params[key])
 
-    return np.array(intercepts), np.array(ar_coefs)
+    return np.array(intercepts), ar_coefs
 
 
 def one_step_forecast_from_result(
@@ -277,9 +299,11 @@ def one_step_forecast_from_result(
     next_regime_probs = filtered_probs @ P
 
     last_vals = history.iloc[-order:].values[::-1]
-    ar_part = float(np.dot(ar_coefs, last_vals))
+    # ar_coefs is shape (k_regimes, order); per-regime AR contribution is shape (k_regimes,).
+    # Backward-compatible with shared AR (broadcast rows) and regime-specific AR.
+    ar_part_per_regime = ar_coefs @ last_vals
 
-    regime_means = intercepts + ar_part
+    regime_means = intercepts + ar_part_per_regime
     forecast = float(np.dot(next_regime_probs, regime_means))
 
     return forecast
@@ -338,6 +362,134 @@ def rolling_forecast_msar(
     if out.empty:
         raise ValueError("All rolling forecasts failed; forecast output is empty.")
 
+    return out
+
+
+def rolling_forecast_msar_rv(
+    log_rv_series: pd.Series,
+    train_window: int = 252,
+    refit_every: int = 21,
+    k_regimes: int = 2,
+    order: int = 1,
+    switching_variance: bool = True,
+    switching_ar: bool = False,
+    trend: str = "c",
+) -> pd.DataFrame:
+    """Walk-forward MS-AR forecast on log-realized-variance.
+
+    Fits MarkovAutoregression on a rolling ``train_window``-day window of
+    ``log_rv_series``, refit every ``refit_every`` steps. Within each refit
+    block, predictions roll forward via ``one_step_forecast_from_result`` —
+    AR component uses the realized history at each step; regime
+    probabilities are stale (the filtered_marginal_probabilities at the end
+    of the most recent training window).
+
+    Failure tracking
+    ----------------
+    A fit "fails" if MarkovAutoregression.fit raises OR returns a
+    non-converged optimizer result. On failure for refit block ``b``:
+      - ``y_msar_pred`` (clean column) is NaN for every step in block b.
+      - ``y_msar_pred_ffill`` (forward-fill column) reuses the most
+        recently successful fit's parameters to produce a prediction.
+
+    Parameters
+    ----------
+    log_rv_series : pd.Series
+        Log-realized-variance series, dropna-ed and float64.
+    train_window : int
+        Rolling fit window length in steps.
+    refit_every : int
+        Refit cadence in steps.
+    k_regimes, order, switching_variance, trend : MS-AR specification
+        Forwarded to ``fit_msar_model``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by ``log_rv_series.index``. Columns:
+          y_msar_pred       : rv_gk-scale prediction, NaN if fit failed.
+          y_msar_pred_ffill : rv_gk-scale prediction, forward-filled across
+                              fit failures.
+          converged         : bool, True if the block's fit succeeded.
+        Attributes (``df.attrs``):
+          n_refits, n_failed
+    """
+    y = pd.Series(log_rv_series).dropna().astype(float)
+    n = len(y)
+
+    if n <= train_window + 1:
+        raise ValueError(f"Series too short: n={n}, train_window={train_window}")
+
+    pred_clean = pd.Series(np.nan, index=y.index, dtype=float)
+    pred_ffill = pd.Series(np.nan, index=y.index, dtype=float)
+    converged = pd.Series(False, index=y.index, dtype=bool)
+
+    last_good_res: Optional[object] = None
+    n_failed = 0  # hard failures (fit raised an exception)
+    n_non_converged = 0  # soft: optimizer didn't fully converge but produced usable params
+    n_refits = 0
+
+    for t in range(train_window, n, refit_every):
+        train = y.iloc[t - train_window: t]
+        block_end = min(t + refit_every, n)
+        n_refits += 1
+
+        block_converged = False
+        res_for_block = None
+
+        try:
+            res = fit_msar_model(
+                returns=train,
+                k_regimes=k_regimes,
+                order=order,
+                switching_ar=switching_ar,
+                switching_variance=switching_variance,
+                trend=trend,
+            )
+            mle_retvals = getattr(res, "mle_retvals", None)
+            if mle_retvals is not None and not mle_retvals.get("converged", True):
+                n_non_converged += 1
+            res_for_block = res
+            block_converged = True
+            last_good_res = res
+        except Exception as e:
+            warnings.warn(f"MS-AR fit failed at t={t}: {e}")
+            n_failed += 1
+            res_for_block = last_good_res
+
+        for i in range(t, block_end):
+            if res_for_block is None:
+                continue
+
+            history = y.iloc[:i]
+            try:
+                yhat_log = one_step_forecast_from_result(
+                    res=res_for_block,
+                    history=history,
+                    k_regimes=k_regimes,
+                    order=order,
+                )
+                yhat_rv = float(np.exp(yhat_log))
+            except Exception as e:
+                warnings.warn(f"MS-AR forecast failed at index {i} (t={t}): {e}")
+                continue
+
+            if block_converged:
+                pred_clean.iloc[i] = yhat_rv
+            pred_ffill.iloc[i] = yhat_rv
+            converged.iloc[i] = block_converged
+
+    out = pd.DataFrame(
+        {
+            "y_msar_pred": pred_clean,
+            "y_msar_pred_ffill": pred_ffill,
+            "converged": converged,
+        },
+        index=y.index,
+    )
+    out.attrs["n_refits"] = n_refits
+    out.attrs["n_failed"] = n_failed
+    out.attrs["n_non_converged"] = n_non_converged
     return out
 
 
