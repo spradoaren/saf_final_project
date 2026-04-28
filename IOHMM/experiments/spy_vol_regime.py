@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 
 import numpy as np
 import pandas as pd
 from arch import arch_model
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# Ensure absolute package imports work when this file is executed directly.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 from IOHMM.regimes.features import build_har_features, build_vol_iohmm_dataset  # noqa: F401
 from IOHMM.regimes.iohmm import GaussianIOHMM
@@ -31,7 +38,6 @@ SEED = 42
 
 
 _EXPERIMENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(_EXPERIMENT_DIR))
 _CANONICAL_OUT_DIR = os.path.join(_PROJECT_ROOT, "experiments")
 
 

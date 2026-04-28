@@ -8,3 +8,4 @@ experiments/cache/
 IOHMM/experiments/*.csv
 *.egg-info/
 /.claude
+*.pyc
